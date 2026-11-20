@@ -5,7 +5,7 @@
 <p align="center">
   <img alt="public leaderboard 0.022" src="https://img.shields.io/badge/public%20LB-0.022-33544C">
   <img alt="private leaderboard 0.022, rank 2 of 288" src="https://img.shields.io/badge/private%20LB-0.022%2C%20rank%202%20of%20288-33544C">
-  <img alt="CPU rebuild of the final file in about 15 min" src="https://img.shields.io/badge/CPU%20rebuild-about%2015%20min-5A897D">
+  <img alt="CPU rebuild of the final file in 15 to 20 min" src="https://img.shields.io/badge/CPU%20rebuild-15%E2%80%9320%20min-5A897D">
   <img alt="final file reproduced bit for bit" src="https://img.shields.io/badge/final%20file-bit--identical-5A897D">
   <img alt="Python 3.12" src="https://img.shields.io/badge/python-3.12-5A897D">
   <img alt="MIT licence" src="https://img.shields.io/badge/licence-MIT-8E9A94">
@@ -15,7 +15,7 @@
 
 This repository rebuilds the final submission of team **Lukas** (Kaggle user `lukasbuck`) for the
 [AI Emulation Challenge](https://www.kaggle.com/competitions/ieee-bigdata-cup-2026-ai-emulation-challenge) of the IEEE BigData
-Cup 2026 (CarbonGlobe) from the stored intermediates of the v1.0 release: one command, CPU only, about 15 minutes. Method,
+Cup 2026 (CarbonGlobe) from the stored intermediates of the v1.0 release: one command, CPU only, 15 to 20 minutes. Method,
 analysis and results are in [`REPORT.pdf`](REPORT.pdf) (extended technical report); the one-page report sent to the organisers is
 [`docs/technical_report_short.pdf`](docs/technical_report_short.pdf).
 
@@ -62,7 +62,7 @@ tar -xJf emulators.tar.xz        # only needed for `reproduce.py emulators` (2.4
 cd ../carbonglobe-solution
 
 # 3. rebuild the final file and compare it with the submitted one (md5 and largest difference)
-python reproduce.py final        # about 15 min on 4 cores, 2 GB of disk; numpy and pandas only
+python reproduce.py final        # 15 to 20 min on 4 cores, 2 GB of disk; numpy and pandas only
 ```
 
 `reproduce.py` reads the release assets from `../3_model_weights` (another folder with `--weights`) and works in `run/` (`--run`).
@@ -87,7 +87,8 @@ python reproduce.py checks                                  # recomputes the val
 | `emulators`, GRU | `results/latent_noco2_m114.csv` (public score 0.127) | largest difference 4e-6 (CPU against the Apple GPU used originally) |
 
 On a second machine (Linux x86_64, Python 3.12.3, numpy 2.5.4, pandas 3.1.0) `final` (16 minutes) and `blend` are bit-identical
-as well, and `checks` prints the same numbers. Should a platform differ in the last digit of a few cells, the script reports the
+as well, and `checks` prints the same numbers. A fresh clone of this repository with the assets downloaded from the v1.0 release
+reproduced the final file bit for bit on 20 Nov 2026 (20 minutes on an Apple M-series Mac). Should a platform differ in the last digit of a few cells, the script reports the
 largest difference instead of "identical".
 
 What is stored rather than rebuilt: the ED outputs (ED's fire module makes repeated runs differ slightly, so a rerun cannot be
