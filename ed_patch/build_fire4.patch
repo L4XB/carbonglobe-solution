@@ -1,0 +1,1143 @@
+--- a/Makefile
++++ b/Makefile
+@@ -1,91 +1,40 @@
+ #------------------------------------------------------------------------------#
+-#                     Makefile for ED and Miami-LU models                      #
++#  Makefile for the CarbonGlobe single-site ED v3.0 build (macOS arm64, clang)  #
++#  Differences from the shipped Makefile: clang++, Homebrew paths, no TBB, no    #
++#  legacy netCDF C++ (outputter is stubbed), -ldb_cxx from berkeley-db.          #
+ #------------------------------------------------------------------------------#
+ 
++CXX = clang++
+ 
+-CXX = gcc
++BREW   = /opt/homebrew/opt
++NETCDF = $(BREW)/netcdf
++BERDB  = $(BREW)/berkeley-db
++CONGLIB = $(BREW)/libconfig
+ 
+-ED = /path/to/EDv3_code
+-NETCDF = $(ED)/external_apps/installed_apps/netcdf/4.1.3
+-TBB = $(ED)/external_apps/installed_apps/IntelTBB/2017U3
+-BERDB = $(ED)/external_apps/installed_apps/BerkeleyDB/4.6.21
+-CONGLIB = $(ED)/external_apps/installed_apps/libconfig/1.7.3
++INC = -I$(NETCDF)/include -I$(BERDB)/include -I$(CONGLIB)/include
++LIB = -L$(NETCDF)/lib -L$(BERDB)/lib -L$(CONGLIB)/lib
+ 
+-INC = -I$(NETCDF)/include -I$(TBB)/include -I$(BERDB)/include -I$(CONGLIB)/include
+-
+-LIB = -L$(NETCDF)/lib -L$(TBB)/lib -L$(BERDB)/lib -L$(CONGLIB)/lib
+-
+-
+-# add  -g for debug, -g3 for debug and optomize, -O2 for optimize
+-#      -Wall for full warnings
+-#      -pg for profiling
+-
+-CXXFLAGS = $(INC) -c -Wall
+-LDFLAGS = $(LIB) -lm -lnetcdf -lnetcdf_c++ -ltbb -ldb_cxx -lconfig++ -lstdc++
++CXXFLAGS = $(INC) -c -O2 -std=gnu++11 -Wno-deprecated-declarations -Wno-format-security -Wno-writable-strings -DED -DMAIN
++LDFLAGS = $(LIB) -lm -lnetcdf -ldb_cxx -lconfig++ -lstdc++
+ 
+ CMN_SRCS = site.cc patch.cc miami.cc belowgrnd.cc \
+            disturbance.cc fire.cc landuse.cc read_site_data.cc init_data.cc \
+-           outputter.cc print_output.cc restart.cc readconfiguration.cc photosynthesis.cc
++           outputter.cc print_output.cc restart.cc readconfiguration.cc photosynthesis.cc mech_cache.cc
+ 
+ EDM_SRCS = cohort.cc growth.cc allometry.cc phenology.cc mortality.cc \
+            mechanism.cc odeint.cc
+ 
+-
+-# Can't use target specific variables because they aren't available 
+-# when needed for dependency includes
+-ifeq ($(MAKECMDGOALS),mlu)
+-	TGT = mlu
+-   CXXFLAGS += -DMIAMI_LU -DMAIN
+-	SRCS = $(CMN_SRCS) main.cc
+-else ifeq ($(MAKECMDGOALS),ed_mpi)
+-   TGT = ed_mpi
+-   CXX = mpicxx
+-   CXXFLAGS += -DED -DUSEMPI -DMAIN
+-   SRCS = $(CMN_SRCS) $(EDM_SRCS) edmpi.cc main.cc
+-else ifeq ($(MAKECMDGOALS),libmlu.a)
+-	TGT = libmlu
+-   CXXFLAGS += -DMIAMI_LU -DCOUPLED
+-   SRCS = $(CMN_SRCS) edm_ied_interface.cc
+-else ifeq ($(MAKECMDGOALS),libed.a)
+-	TGT = libed
+-   CXXFLAGS += -DED -DCOUPLED
+-   SRCS = $(CMN_SRCS) $(EDM_SRCS) edm_ied_interface.cc
+-else
+-	TGT = edlu
+-   CXXFLAGS += -DED -DMAIN
+-   SRCS = $(CMN_SRCS) $(EDM_SRCS) main.cc
+-endif
+-
++SRCS = $(CMN_SRCS) $(EDM_SRCS) main.cc
+ OBJS = $(SRCS:.cc=.o)
+ 
+ all: edlu
+ 
+-edlu ed_mpi mlu: $(OBJS)
++edlu: $(OBJS)
+ 	$(CXX) $(OBJS) $(LDFLAGS) -o $@
+ 
+-libed.a libmlu.a: $(OBJS)
+-	ar rcs $@ $(OBJS)
+-
+-%.tgt: 
+-	@rm -f *.tgt; \
+-	touch $@; 
+-
+-# make sure that .o and .d files get rebuilt if we switch targets
+-$(OBJS) $(SRCS:.cc=.d): $(TGT).tgt
+-
+-# automatically determine header dependencies 
+-%.d: %.cc
+-	@set -e; rm -f $@; \
+-	$(CXX) -MM $(CXXFLAGS) $< > $@.$$$$; \
+-	sed 's,\($*\)\.o[ :]*,\1.o $@ : ,g' < $@.$$$$ > $@; \
+-	rm -f $@.$$$$
+-
+-ifneq ($(MAKECMDGOALS),clean)
+-   -include $(SRCS:.cc=.d)
+-endif
+-
++%.o: %.cc
++	$(CXX) $(CXXFLAGS) $< -o $@
+ 
+ .PHONY: clean
+ clean:
+-	- rm -f *.d *.o core.* edlu mlu
+-
++	- rm -f *.o edlu
+--- a/disturbance.cc
++++ b/disturbance.cc
+@@ -33,7 +33,10 @@
+    cp->disturbance_rate[1] = fire(t, &cp, data);
+   
+    /* CALCULATE TREEFALL DISTURBANCE RATES */
+-    if (cs->climate_zone==1)
++    static const char* tf_env = getenv("ED_TREEFALL");
++    static const double tf_val = tf_env ? atof(tf_env) : -1.0;   // CarbonGlobe: dst channel is 0.012 everywhere
++    if (tf_val > 0) cp->disturbance_rate[0] = tf_val;
++    else if (cs->climate_zone==1)
+     {
+       cp->disturbance_rate[0] = data->treefall_max_disturbance_rate_trop;
+ #ifdef MIAMI_LU
+@@ -43,7 +46,7 @@
+          - (data->treefall_max_disturbance_rate_trop - data->treefall_max_disturbance_rate_temp ) 
+          / 30.0 * (abs(cs->sdata->lat_) - 15.0);
+ #endif
+-   } else {
++   } else if (tf_val <= 0) {
+       cp->disturbance_rate[0] = data->treefall_max_disturbance_rate_temp;
+    }
+ 
+--- a/edmodels.h
++++ b/edmodels.h
+@@ -1,7 +1,11 @@
+  #ifndef EDM_DOMAIN_H_
+ #define EDM_DOMAIN_H_
++#define NLAT 2   // CarbonGlobe single-site shim grid (was 360)
++#define NLON 2   // (was 720)
+ 
+ #include <cstdlib>
++#include <cmath>
++using std::abs;
+ #include <vector>
+ #include <string>
+ 
+@@ -27,7 +31,7 @@
+ 
+ #if 1-LOCAL_MACHINE
+ #define MODEL_CONFIG_FILE "models.cfg"
+-#define TBB 1 ///< Intel Thread Building Blocks
++#define TBB 0 ///< Intel Thread Building Blocks
+ #define GCD 0 ///< Grand Central Dispatch. Works on Mac only
+ #endif
+ 
+@@ -59,7 +63,7 @@
+ #define CO2_START_VARY 1850 // When global average of CO2 concentration start increasing from 280 ppm. From this year, An, En variables will be calculated annual based on new CO2
+ #define MERRA2_YEAR_START_USE 1980   // When ED starts using MERRA2 yearly data, previously using 1980, using 1945 may cause high NBP in 1980s due to legency effect from 1970 when use 2000s climate
+ #define MERRA2_START 1981
+-#define MERRA2_END 2015
++#define MERRA2_END 2020
+ const float LAI_INTERVAL[]={0,1.5,5, 10, 20, 30}; //The elements number should be same as N_LAI
+ 
+ ///////////////////////////////////////
+@@ -589,7 +593,7 @@
+    // Yannick GFED
+    //double *** gfed_bf; ///< declaring pointer to burned fraction data
+     
+-    double gfed_bf[12][360][720];
++    double gfed_bf[12][NLAT][NLON];
+ 
+    /*Mechanism look up table for FTS ONLY*/
+    
+@@ -603,15 +607,15 @@
+     int is_loadMERRA2[MERRA2_END-MERRA2_START+1];
+     int MERRA2_LUT;
+     int LANDUSE_FLAG;
+-    double planting_probability[12][360][720];
+-    double harvest_probability[12][360][720];
+-    
+-    double global_tmp[288][360][720];
+-    double global_hum[288][360][720];
+-    double global_swd[288][360][720];
+-    double global_windspeed[288][360][720];
+-    double global_CO2[288][360][720];
+-    double global_soiltmp[288][360][720]; //1st layer in MERRA2 soil tempetature
++    double planting_probability[12][NLAT][NLON];
++    double harvest_probability[12][NLAT][NLON];
++    
++    double global_tmp[288][NLAT][NLON];
++    double global_hum[288][NLAT][NLON];
++    double global_swd[288][NLAT][NLON];
++    double global_windspeed[288][NLAT][NLON];
++    double global_CO2[288][NLAT][NLON];
++    double global_soiltmp[288][NLAT][NLON]; //1st layer in MERRA2 soil tempetature
+ 
+ #if LANDUSE
+     double yr1_decay_rate;         ///< yr-1, Decay rate of 1-year wood product pool
+@@ -620,9 +624,9 @@
+     //test_crop
+     double sd_mort_crop;
+     double crop_mini_nindiv;
+-    float gfl[N_LANDUSE_TYPES][N_LANDUSE_TYPES-1][N_LANDUSE_YEARS][360][720];
+-    float gfvh[N_VBH_TYPES][N_LANDUSE_YEARS][360][720];
+-    float gfsh[N_SBH_TYPES][N_LANDUSE_YEARS][360][720];
++    float gfl[N_LANDUSE_TYPES][N_LANDUSE_TYPES-1][N_LANDUSE_YEARS][NLAT][NLON];
++    float gfvh[N_VBH_TYPES][N_LANDUSE_YEARS][NLAT][NLON];
++    float gfsh[N_SBH_TYPES][N_LANDUSE_YEARS][NLAT][NLON];
+ #endif
+     float **soil_depth;
+     float **theta_max;
+--- a/fire.cc
++++ b/fire.cc
+@@ -1,4 +1,6 @@
+ #include <cstdio>
++#include <cstdlib>
++#include <vector>
+ #include <cstring>
+ #include <cmath>
+ #include "netcdf.h"
+@@ -51,8 +53,38 @@
+    }
+ 
+ #if defined ED 
+-   for ( size_t i=0; i<N_SUB; i++ ) {
+-      fireterm += cp->lambda1[i] / ( 1.0 * N_SUB );
++   // CarbonGlobe: ED_FIRE_X_FILE = one ignition factor per window year (the mean of (DI / 30000)^10 the organisers'
++   // fire saw in that year, computed outside); rate = site fuel x fp1 x X[year], capped below. The burn of step
++   // t = 12 (2 + k) lands between the December snapshots k and k + 1 of the window (snapshot 0 = t 12).
++   static std::vector<double> cg_x; static bool cg_x_loaded = false;
++   if (!cg_x_loaded) {
++      cg_x_loaded = true;
++      const char* fn = getenv("ED_FIRE_X_FILE");
++      if (fn != NULL) { FILE* fx = fopen(fn, "r"); double v; if (fx != NULL) { while (fscanf(fx, "%lf", &v) == 1) cg_x.push_back(v); fclose(fx); } printf("ED_FIRE_X_FILE %s: %d values\n", fn, (int) cg_x.size()); }
++   }
++   if (!cg_x.empty()) {
++      // the state written for time t already contains the patch dynamics of step t: X[k] acts at step 12 (2 + k)
++      static const long cg_shift = getenv("ED_FIRE_X_SHIFT") ? atol(getenv("ED_FIRE_X_SHIFT")) : 2;   // 1: X[k] acts at the January step of window year k (December-row records)
++      long n = ((long) t - (long) data->start_time) / N_SUB - cg_shift;
++      if (n >= (long) cg_x.size()) n = (long) cg_x.size() - 1;
++      if (cg_x.size() >= 12 * 30) {
++         // MONTHLY factors (12 per window year, wet-month rule already applied): each month contributes at most the cap
++         long ny = (long) cg_x.size() / 12;
++         if (n >= ny) n = ny - 1;
++         fireterm = 0.0;
++         if (n >= 0) {
++            for (int m = 0; m < 12; m++) {
++               double r = cp->siteptr->fuel[cp->landuse] * data->fp1 * cg_x[n * 12 + m];
++               fireterm += (r > data->fire_max_disturbance_rate ? data->fire_max_disturbance_rate : r) / 12.0;
++            }
++         }
++      } else {
++         fireterm = (n < 0) ? 0.0 : cp->siteptr->fuel[cp->landuse] * data->fp1 * cg_x[n];
++      }
++   } else {
++      for ( size_t i=0; i<N_SUB; i++ ) {
++         fireterm += cp->lambda1[i] / ( 1.0 * N_SUB );
++      }
+    }
+ 
+ #elif MIAMI_LU
+@@ -178,7 +210,8 @@
+     
+     //Without the below cap, ignition_rate is overestimated in Amazon forest due to hight dryness and average temperature, howoever, this region
+     // has much lower burned area than the sme latitude in Africa.
+-    if(cs->sdata->precip[data->time_period]>100.0)
++    static const bool no_wet_rule = (getenv("ED_NO_WET_RULE") != NULL);   // CarbonGlobe: the training truth burns in years without a month below 8.33 mm
++    if(!no_wet_rule && cs->sdata->precip[data->time_period]>100.0)
+         cs->ignition_rate[landuse] = 0.0;
+ 
+    /* calculate fire dist rate and add into array of within yr values */
+--- a/main.cc
++++ b/main.cc
+@@ -25,6 +25,7 @@
+ #include "read_site_data.h"
+ #include "print_output.h"
+ #include "readconfiguration.h"
++#include "mech_cache.h"
+ 
+ time_t seconds;           /* time variable for rnd seeding */
+ long intdum;              /* random no. seed */
+@@ -94,6 +95,7 @@
+    /* initialize site structures */
+    if(data->do_yearly_mech) {
+    data->mechanism_year = INI_Year+data->start_time;  /*  Added to allow initial mech year  */
++      if (getenv("ED_WINDOW_YEAR0")) data->mechanism_year = atoi(getenv("ED_WINDOW_YEAR0"));   // CarbonGlobe window
+       if(data->m_string) {
+          /* Added to read list of years we want */
+          namefile = fopen("/Network/Xgrid/data/MSTMIP/model_driver/cru_ncep/file_lists/fl1.txt","r");
+@@ -134,6 +136,7 @@
+    init_sites(&first_site, data);
+ 
+    data->first_site = first_site;
++   if (data->do_yearly_mech) { for (site* sp = first_site; sp != NULL; sp = sp->next_site) mech_cache_load(sp->sdata, data->mechanism_year); }   // CarbonGlobe
+ 
+    if (first_site == NULL) {
+       fprintf(stderr, "error no valid sites \n"); 
+@@ -193,6 +196,7 @@
+ //! @return 
+ ////////////////////////////////////////////////////////////////////////////////
+ void ed_finalize(UserData& data) {
++   if (data.do_yearly_mech) { for (site* sp = data.first_site; sp != NULL; sp = sp->next_site) mech_cache_save(sp->sdata, mech_cache_last_year()); }   // CarbonGlobe
+    printf("Problematic Sites:\n");
+    int count1 = 0, count2 = 0;
+    site* current_site = data.first_site;
+@@ -386,6 +390,7 @@
+              {
+                  size_t i=0;
+                  data.mechanism_year = INI_Year+t1;
++                 if (getenv("ED_WINDOW_YEAR0")) data.mechanism_year = atoi(getenv("ED_WINDOW_YEAR0")) + (int) floor(t1 - data.start_time / (double) N_SUB + 1e-6);   // CarbonGlobe window
+                  if (data.mechanism_year<1850)
+                  {
+                      data.MERRA2_LUT=0;
+@@ -403,7 +408,9 @@
+                      while (siteptr != NULL)
+                      {
+                          /* Now we have to read the site data again */
++                         mech_cache_save(siteptr->sdata, mech_cache_last_year());   // CarbonGlobe: keep the finished year's tables
+                          siteptr->sdata->readSiteData(data);
++                         mech_cache_load(siteptr->sdata, data.mechanism_year);   // CarbonGlobe: reuse tables of this year
+                          siteptr = siteptr->next_site;
+                      }
+                  }
+@@ -431,7 +438,9 @@
+                      while (siteptr != NULL)
+                      {
+                          /* Now we have to read the site data again */
++                         mech_cache_save(siteptr->sdata, mech_cache_last_year());   // CarbonGlobe: keep the finished year's tables
+                          siteptr->sdata->readSiteData(data);
++                         mech_cache_load(siteptr->sdata, data.mechanism_year);   // CarbonGlobe: reuse tables of this year
+                          siteptr = siteptr->next_site;
+                      }
+                  }
+--- a/outputter.cc
++++ b/outputter.cc
+@@ -1,242 +1,2 @@
+-#include <iostream>
+-#include <netcdfcpp.h>
+-#include <string>
+-
+-#include "edmodels.h"
+-#include "site.h"
+-#include "read_site_data.h"
+-
++// CarbonGlobe stub: the netCDF Outputter is header-only (outputter.h); nothing to compile here.
+ #include "outputter.h"
+-
+-using namespace std;
+-
+-////////////////////////////////////////////////////////////////////////////////
+-//! Outputter
+-//! 
+-//!
+-//! @param  
+-//! @return 
+-////////////////////////////////////////////////////////////////////////////////
+-Outputter::Outputter (UserData* data) :
+-      recNo(0),
+-      data(data)
+-{
+-   string filename (data->base_filename);
+-   filename += ".region.nc";
+-
+-   NcError err(NcError::verbose_nonfatal);
+-   outputFile = new NcFile(filename.c_str(), NcFile::Replace);
+-
+-   // TODO: get rid of these exception throws
+-   if (!outputFile->is_valid()) throw "Failed to create file";
+-   NcDim *timeDim, *latDim, *lonDim;
+-   if (!(timeDim = outputFile->add_dim("time")))
+-      throw "Failed to create time dim";
+-   if (!(latDim = outputFile->add_dim("lat", data->n_lat)))
+-      throw "Failed to create lat dim";
+-   if (!(lonDim = outputFile->add_dim("lon", data->n_lon)))
+-      throw "Failed to create lon dim";
+- 
+-   // TODO: need to deal with time variable
+-   NcVar *latVar, *lonVar;
+-   if (!(latVar = outputFile->add_var("lat", ncFloat, latDim)))
+-      throw "Failed to create lat var";
+-   latVar->add_att("units", "degrees_north");
+-   if (!(lonVar = outputFile->add_var("lon", ncFloat, lonDim)))
+-       throw "Failed to create lon var";
+-   lonVar->add_att("units", "degrees_east");
+-   
+-   latVar->put(&data->lats[0], data->n_lat);
+-   lonVar->put(&data->lons[0], data->n_lon);
+-}
+-
+-////////////////////////////////////////////////////////////////////////////////
+-//! getOrCreateVariable
+-//! 
+-//!
+-//! @param  
+-//! @return 
+-////////////////////////////////////////////////////////////////////////////////
+-template <class T>
+-NcVar* Outputter::getOrCreateVariable (Var<T> *v, bool isRec) {
+-   NcError err(NcError::silent_nonfatal);
+-      
+-   NcVar *var = outputFile->get_var(v->name.c_str());
+-   if (var == NULL || !var->is_valid()) {
+-      if (isRec)
+-         var = outputFile->add_var(v->name.c_str(), v->dtype, 
+-                                   outputFile->get_dim("time"),
+-                                   outputFile->get_dim("lat"),
+-                                   outputFile->get_dim("lon"));
+-      else
+-         var = outputFile->add_var(v->name.c_str(), v->dtype, 
+-                                   outputFile->get_dim("lat"),
+-                                   outputFile->get_dim("lon"));
+-      if (!v->units.empty())
+-         var->add_att("units", v->units.c_str());
+-      var->add_att("missing_value", v->fill);
+-      var->add_att("_fillValue", v->fill);
+-   } 
+-   return var;
+-}
+-
+-////////////////////////////////////////////////////////////////////////////////
+-//! getOrCreateLUVariable
+-//! 
+-//!
+-//! @param  
+-//! @return 
+-////////////////////////////////////////////////////////////////////////////////
+-template <class T>
+-NcVar* Outputter::getOrCreateLUVariable (LUVar<T> *v, size_t luType, bool isRec) {
+-   string name = v->name + "_" + this->luShortName(luType);
+-
+-   NcError err(NcError::silent_nonfatal);
+-
+-   NcVar *var = outputFile->get_var(name.c_str());
+-   if (var == NULL || !var->is_valid()) {
+-      if (isRec)
+-         var = outputFile->add_var(name.c_str(), v->dtype, 
+-                                   outputFile->get_dim("time"),
+-                                   outputFile->get_dim("lat"),
+-                                   outputFile->get_dim("lon"));
+-      else
+-         var = outputFile->add_var(name.c_str(), v->dtype, 
+-                                   outputFile->get_dim("lat"),
+-                                   outputFile->get_dim("lon"));
+-
+-      if (!v->units.empty())
+-         var->add_att("units", v->units.c_str());
+-      var->add_att("missing_value", v->fill);
+-      var->add_att("_fillValue", v->fill);
+-   } 
+-
+-   return var;
+-}
+-
+-////////////////////////////////////////////////////////////////////////////////
+-//! outputAll
+-//! 
+-//!
+-//! @param  
+-//! @return 
+-////////////////////////////////////////////////////////////////////////////////
+-void Outputter::outputAll (site* firstsite) {
+-   vector<VarBase *>::iterator i;
+-
+-   for (i=registeredVars.begin(); i!=registeredVars.end(); i++) {
+-      if ((*i)->dtype == ncFloat)
+-         outputRec<float> (dynamic_cast<Var<float>* >((VarBase*)(*i)), firstsite);
+-      else if ((*i)->dtype == ncInt)
+-         outputRec<int> (dynamic_cast<Var<int>* >((VarBase*)(*i)), firstsite);
+-   }
+-
+-   for (i=registeredLUVars.begin(); i!=registeredLUVars.end(); i++) {
+-      if ((*i)->dtype == ncFloat)
+-         outputLURec<float> (dynamic_cast<LUVar<float>* >((VarBase*)(*i)), firstsite);
+-      else if ((*i)->dtype == ncInt)
+-         outputLURec<int> (dynamic_cast<LUVar<int>* >((VarBase*)(*i)), firstsite);
+-   }
+-   recNo++;
+-}
+-
+-////////////////////////////////////////////////////////////////////////////////
+-//! outputRec
+-//! 
+-//!
+-//! @param  
+-//! @return 
+-////////////////////////////////////////////////////////////////////////////////
+-template <class T>
+-   void Outputter::outputRec (Var<T> *v, site* firstsite, bool isRec) {
+-   T d[data->n_lat][data->n_lon];
+-
+-   NcVar *var = getOrCreateVariable(v, isRec);
+-
+-   for (size_t i=0; i<data->n_lat; i++)
+-      for (size_t j=0; j<data->n_lon; j++) 
+-         d[i][j] = v->fill;
+-
+-   site* cs = firstsite;
+-   while (cs != NULL) {
+-      if (!cs->skip_site) d[cs->sdata->y_][cs->sdata->x_] = (*(v->get))(cs);
+-      cs = cs->next_site;
+-   }
+-
+-   if (isRec) {
+-      if (!var->put_rec(&d[0][0], recNo))
+-         cout << "could not output " << v->name << " " << recNo << endl;
+-   } else {
+-      if (!var->put(&d[0][0], data->n_lat, data->n_lon))
+-         cout << "count not output " << v->name << endl;
+-   }
+-
+-   outputFile->sync();
+-}
+-
+-////////////////////////////////////////////////////////////////////////////////
+-//! outputLURec
+-//! 
+-//!
+-//! @param  
+-//! @return 
+-////////////////////////////////////////////////////////////////////////////////
+-template <class T>
+-void Outputter::outputLURec (LUVar<T> *v, site* firstsite, bool isRec) {
+-   T d[N_LANDUSE_TYPES][data->n_lat][data->n_lon];
+-   NcVar *var[N_LANDUSE_TYPES];
+-
+-   for (size_t lu=0; lu<N_LANDUSE_TYPES; lu++) 
+-      var[lu] = getOrCreateLUVariable(v, lu, isRec);
+-
+-   for (size_t lu=0; lu<N_LANDUSE_TYPES; lu++)
+-      for (size_t i=0; i<data->n_lat; i++)
+-         for (size_t j=0; j<data->n_lon; j++) 
+-            d[lu][i][j] = v->fill;
+-
+-   site* cs = firstsite;
+-   while (cs != NULL) {
+-      if (!cs->skip_site) 
+-         for (size_t lu=0; lu<N_LANDUSE_TYPES; lu++)
+-            d[lu][cs->sdata->y_][cs->sdata->x_] = (*(v->get))(cs, lu);
+-      cs = cs->next_site;
+-   }
+-
+-   if (isRec) {
+-      for (size_t lu=0; lu<N_LANDUSE_TYPES; lu++)
+-         if (!var[lu]->put_rec(&d[lu][0][0], recNo))
+-            cout << "could not output " << v->name << "_" << this->luShortName(lu) << " " << recNo << endl;
+-   } else {
+-      for (size_t lu=0; lu<N_LANDUSE_TYPES; lu++)
+-         if (!var[lu]->put(&d[lu][0][0], data->n_lat, data->n_lon))
+-            cout << "count not output " << v->name << "_" << this->luShortName(lu) << endl;
+-   }
+-
+-   outputFile->sync();
+-}
+-
+-////////////////////////////////////////////////////////////////////////////////
+-//! luShortName
+-//! 
+-//!
+-//! @param  
+-//! @return 
+-////////////////////////////////////////////////////////////////////////////////
+-string Outputter::luShortName (size_t luType) {
+-   string name;
+-   switch (luType) {
+-      case LU_NTRL : 
+-         name = "natr";
+-         break;
+-      case LU_SCND : 
+-         name = "scnd";
+-         break;
+-      case LU_CROP : 
+-         name = "crop";
+-         break;
+-      case LU_PAST : 
+-         name = "past";
+-         break;
+-   }
+-   return name;
+-}
+--- a/outputter.h
++++ b/outputter.h
+@@ -1,93 +1,29 @@
+ #ifndef EDM_OUTPUTTER_H_
+ #define EDM_OUTPUTTER_H_
++// CarbonGlobe stub of ED v3.0's netCDF Outputter (the original needs the legacy netCDF C++ API).
++// Keeps the interface print_output.cc registers against; every method is a no-op. The per-site
++// text files (.biomass, .cfluxes, .sc, .pss/.css) carry everything the single-site runs need.
++#include <vector>
++#include <string>
++#include <cstddef>
+ 
+-#include <vector>
+-#include "netcdfcpp.h"
+-
+-// Forward declarations
+ struct UserData;
+ struct site;
+ 
++enum NcType { ncNoType = 0, ncByte = 1, ncChar = 2, ncShort = 3, ncInt = 4, ncFloat = 5, ncDouble = 6 };
++
+ class Outputter {
+-
+-   class VarBase {
+-    public:
+-      VarBase (std::string name, std::string units, NcType dtype)
+-         : name(name), units(units), dtype(dtype)
+-      {
+-      }
+-      virtual ~VarBase () {}
+-
+-      std::string name;
+-      std::string units;
+-      NcType dtype;
+-   };
+-
+-   template <class T> class Var : public VarBase {
+-    public: 
+-      Var (std::string name, T (*get)(site*), std::string units, T fill, NcType dtype) 
+-         : VarBase(name, units, dtype), get(get), fill(fill)
+-      {
+-      }
+-            
+-      T (*get)(site*);
+-      T fill;
+-   };
+-
+-   template <class T> class LUVar : public VarBase {
+-    public: 
+-      LUVar (std::string name, T (*get)(site*, size_t luType), std::string units, T fill, NcType dtype) 
+-         : VarBase(name, units, dtype), get(get), fill(fill)
+-      {
+-      }
+-            
+-      T (*get)(site*, size_t luType);
+-      T fill;
+-   };
+-
+  public:
+-   
+-   Outputter (UserData* data);
+-
+-   template <class T> void registerVar (const char *name, T (*get)(site*), 
+-                                        const char *units, T fill, NcType dtype) {
+-      registeredVars.push_back(new Var<T>(std::string(name), get, units, fill, dtype));
+-   }
+-
+-   template <class T> void registerLUVar (const char *name, T (*get)(site*, size_t luType), 
+-                                          const char *units, T fill, NcType dtype) {
+-      registeredLUVars.push_back(new LUVar<T>(std::string(name), get, units, fill, dtype));
+-   }
+-
+-   void outputAll (site* firstsite);
+-
+-   template <class T> void outputRec (Var<T> *v, site* firstsite, bool isRec=true);
+-   template <class T> void outputLURec (LUVar<T> *v, site* firstsite, bool isRec=true);
+-
+-   template <class T> void outputSingle (const char *name, T (*get)(site*), 
+-                                         const char *units, T fill, NcType dtype,
+-                                         site* firstsite) {
+-      Var<T> v(name, get, units, fill, dtype);
+-      outputRec(&v, firstsite, false);
+-   }
+-
+-   std::string luShortName (size_t luType);
++   Outputter (UserData* data) : recNo(0), data(data) {}
++   ~Outputter () {}
++   template <class T> void registerVar (const char* /*name*/, T (*/*get*/)(site*), const char* /*units*/, T /*fill*/, NcType /*dtype*/) {}
++   template <class T> void registerLUVar (const char* /*name*/, T (*/*get*/)(site*, size_t), const char* /*units*/, T /*fill*/, NcType /*dtype*/) {}
++   void outputAll (site* /*firstsite*/) { recNo++; }
++   template <class T> void outputSingle (const char* /*name*/, T (*/*get*/)(site*), const char* /*units*/, T /*fill*/, NcType /*dtype*/, site* /*firstsite*/) {}
++   std::string luShortName (size_t luType) { return std::string(luType == 0 ? "ntrl" : luType == 1 ? "scnd" : luType == 2 ? "crop" : "past"); }
+    size_t recNo;
+-
+  private:
+-   template <class T>
+-      NcVar* getOrCreateVariable (Var<T> *v, bool isRec=true);
+-
+-   template <class T>
+-      NcVar* getOrCreateLUVariable (LUVar<T> *v, size_t luType, bool isRec=true);
+-
+-   UserData *data;
+-   NcFile *outputFile;
+-   std::vector<VarBase *> registeredVars;
+-   std::vector<VarBase *> registeredLUVars;
+-
++   UserData* data;
+ };
+ 
+-
+ #endif // EDM_OUTPUTTER_H_
+-
+--- a/read_site_data.cc
++++ b/read_site_data.cc
+@@ -685,8 +685,8 @@
+     index[2] = 0;
+     
+     count[0] = 12;
+-    count[1] = 360;
+-    count[2] = 720;
++    count[1] = NLAT;
++    count[2] = NLON;
+     
+     rv = nc_open(data->crop_calendar_file, NC_NOWRITE, &ncid);
+     rv = nc_inq_varid(ncid, "planting_Probability", &varid);
+@@ -712,8 +712,8 @@
+     index[2] = 0;
+     
+     count[0] = N_LANDUSE_YEARS;
+-    count[1] = 360;
+-    count[2] = 720;
++    count[1] = NLAT;
++    count[2] = NLON;
+     
+     if (data->lu_file_ncid == 0) {
+         if ((rv = nc_open(data->lu_file, NC_NOWRITE, &ncid)))
+@@ -740,8 +740,8 @@
+     }
+     
+     count[0] = N_LANDUSE_YEARS;
+-    count[1] = 360;
+-    count[2] = 720;
++    count[1] = NLAT;
++    count[2] = NLON;
+     for (dlu=0; dlu<N_VBH_TYPES; dlu++) {
+         sprintf(varname, "gfvh%d", dlu+1);
+         if ((rv = nc_inq_varid(ncid, varname, &varid)))
+@@ -767,14 +767,23 @@
+ }
+ #endif
+ 
++// CarbonGlobe: with ED_YEAR_CYCLE=n (and ED_WINDOW_YEAR0=y0) the yearly input files cycle over y0 .. y0+n-1
++static int cgb_file_year(int year) {
++   const char* c = getenv("ED_YEAR_CYCLE"); const char* y = getenv("ED_WINDOW_YEAR0");
++   if (!c || !y) return year;
++   int n = atoi(c), y0 = atoi(y);
++   if (n <= 0) return year;
++   int k = (year - y0) % n; if (k < 0) k += n;
++   return y0 + k;
++}
+ bool loadGlobalEnvironmentData(UserData* data)
+ {
+     int rv, ncid, varid,x,y,z;
+     
+     size_t index1[2] = { 0, 0};
+     size_t index2[3] = { 0,0,0};
+-    size_t count1[3]  = { 360, 720};
+-    size_t count2[3]  = { 12,360, 720};
++    size_t count1[3]  = { NLAT, NLON};
++    size_t count2[3]  = { 12,NLAT, NLON};
+     
+ 
+     // Added below for yearly climate
+@@ -797,7 +806,7 @@
+                 }
+                 
+                 printf("mechanism_year %d MERRA2_timestamp %d\n",data->mechanism_year,data->MERRA2_timestamp);
+-                sprintf(convert, "%s%d", base, data->MERRA2_timestamp+MERRA2_START-1);
++                sprintf(convert, "%s%d", base, cgb_file_year(data->MERRA2_timestamp+MERRA2_START-1));
+                 strcpy(climatename, data->climate_file);
+                 strcat(climatename, convert);
+                 strcat(climatename, nc);
+@@ -836,89 +845,89 @@
+     if (data->soil_depth==NULL)
+     {
+         printf("Start allocate soil_depth\n");
+-        data->soil_depth=malloc_2d_float(360,720);
++        data->soil_depth=malloc_2d_float(NLAT,NLON);
+     }
+     else
+     {
+         printf("Start reset soil_depth\n");
+-        reset_2d_float(data->soil_depth,360,720);
++        reset_2d_float(data->soil_depth,NLAT,NLON);
+     }
+     
+     if (data->theta_max==NULL)
+     {
+-        data->theta_max=malloc_2d_float(360,720);
++        data->theta_max=malloc_2d_float(NLAT,NLON);
+     }
+     else
+     {
+-        reset_2d_float(data->theta_max,360,720);
++        reset_2d_float(data->theta_max,NLAT,NLON);
+     }
+     
+     if (data->k_sat==NULL)
+     {
+-        data->k_sat=malloc_2d_float(360,720);
++        data->k_sat=malloc_2d_float(NLAT,NLON);
+     }
+     else
+     {
+-        reset_2d_float(data->k_sat,360,720);
++        reset_2d_float(data->k_sat,NLAT,NLON);
+     }
+     
+     if (data->tau==NULL)
+     {
+-        data->tau=malloc_2d_float(360,720);
++        data->tau=malloc_2d_float(NLAT,NLON);
+     }
+     else
+     {
+-        reset_2d_float(data->tau,360,720);
++        reset_2d_float(data->tau,NLAT,NLON);
+     }
+ 
+ #if SOILGRIDS_SCHEME
+     if (data->MvG_soil_depth==NULL)
+     {
+-        data->MvG_soil_depth=malloc_2d_float(360,720);
++        data->MvG_soil_depth=malloc_2d_float(NLAT,NLON);
+     }
+     else
+     {
+-        reset_2d_float(data->MvG_soil_depth,360,720);
++        reset_2d_float(data->MvG_soil_depth,NLAT,NLON);
+     }
+     if (data->MvG_k_sat==NULL)
+     {
+-        data->MvG_k_sat=malloc_2d_float(360,720);
++        data->MvG_k_sat=malloc_2d_float(NLAT,NLON);
+     }
+     else
+     {
+-        reset_2d_float(data->MvG_k_sat,360,720);
++        reset_2d_float(data->MvG_k_sat,NLAT,NLON);
+     }
+     if (data->MvG_L==NULL)
+     {
+-        data->MvG_L=malloc_2d_float(360,720);
++        data->MvG_L=malloc_2d_float(NLAT,NLON);
+     }
+     else
+     {
+-        reset_2d_float(data->MvG_L,360,720);
++        reset_2d_float(data->MvG_L,NLAT,NLON);
+     }
+     if (data->MvG_m==NULL)
+     {
+-        data->MvG_m=malloc_2d_float(360,720);
++        data->MvG_m=malloc_2d_float(NLAT,NLON);
+     }
+     else
+     {
+-        reset_2d_float(data->MvG_m,360,720);
++        reset_2d_float(data->MvG_m,NLAT,NLON);
+     }
+     if (data->MvG_theta_saturated==NULL)
+     {
+-        data->MvG_theta_saturated=malloc_2d_float(360,720);
++        data->MvG_theta_saturated=malloc_2d_float(NLAT,NLON);
+     }
+     else
+     {
+-        reset_2d_float(data->MvG_theta_saturated,360,720);
++        reset_2d_float(data->MvG_theta_saturated,NLAT,NLON);
+     }
+     if (data->MvG_theta_residual==NULL)
+     {
+-        data->MvG_theta_residual=malloc_2d_float(360,720);
++        data->MvG_theta_residual=malloc_2d_float(NLAT,NLON);
+     }
+     else
+     {
+-        reset_2d_float(data->MvG_theta_residual,360,720);
++        reset_2d_float(data->MvG_theta_residual,NLAT,NLON);
+     }
+     int ncid_soilGrids;
+     char soil_file_soilGrids[256];
+@@ -988,34 +997,34 @@
+     if (data->climate_temp==NULL)
+     {
+         printf("Start allocate climate_temp\n");
+-        data->climate_temp=malloc_3d_float(N_CLIMATE,360,720);
++        data->climate_temp=malloc_3d_float(N_CLIMATE,NLAT,NLON);
+     }
+     else
+     {
+         printf("Start reset climate_temp\n");
+-        reset_3d_float(data->climate_temp,N_CLIMATE,360,720);
++        reset_3d_float(data->climate_temp,N_CLIMATE,NLAT,NLON);
+     }
+     
+     if (data->climate_precip==NULL)
+     {
+         printf("Start allocate climate_precip\n");
+-        data->climate_precip=malloc_3d_float(N_CLIMATE,360,720);
++        data->climate_precip=malloc_3d_float(N_CLIMATE,NLAT,NLON);
+     }
+     else
+     {
+         printf("Start reset climate_precip\n");
+-        reset_3d_float(data->climate_precip,N_CLIMATE,360,720);
++        reset_3d_float(data->climate_precip,N_CLIMATE,NLAT,NLON);
+     }
+     
+     if (data->climate_soil==NULL)
+     {
+         printf("Start allocate climate_soil\n");
+-        data->climate_soil=malloc_3d_float(N_CLIMATE,360,720);
++        data->climate_soil=malloc_3d_float(N_CLIMATE,NLAT,NLON);
+     }
+     else
+     {
+         printf("Start reset climate_soil\n");
+-        reset_3d_float(data->climate_soil,N_CLIMATE,360,720);
++        reset_3d_float(data->climate_soil,N_CLIMATE,NLAT,NLON);
+     }
+     
+     if (data->climate_file_ncid == 0) {
+@@ -1044,12 +1053,12 @@
+     if (data->climate_soil1==NULL)
+     {
+         printf("Start allocate climate_soil1\n");
+-        data->climate_soil1=malloc_3d_float(N_CLIMATE,360,720);
++        data->climate_soil1=malloc_3d_float(N_CLIMATE,NLAT,NLON);
+     }
+     else
+     {
+         printf("Start reset climate_soil1\n");
+-        reset_3d_float(data->climate_soil1,N_CLIMATE,360,720);
++        reset_3d_float(data->climate_soil1,N_CLIMATE,NLAT,NLON);
+     }
+     if ((rv = nc_inq_varid(ncid, "soil_temp1", &varid))) {
+         NCERR("soil_temp1", rv);
+@@ -1061,12 +1070,12 @@
+     if (data->climate_soil2==NULL)
+     {
+         printf("Start allocate climate_soil2\n");
+-        data->climate_soil2=malloc_3d_float(N_CLIMATE,360,720);
++        data->climate_soil2=malloc_3d_float(N_CLIMATE,NLAT,NLON);
+     }
+     else
+     {
+         printf("Start reset climate_soil2\n");
+-        reset_3d_float(data->climate_soil2,N_CLIMATE,360,720);
++        reset_3d_float(data->climate_soil2,N_CLIMATE,NLAT,NLON);
+     }
+     if ((rv = nc_inq_varid(ncid, "soil_temp2", &varid))) {
+         NCERR("soil_temp2", rv);
+@@ -1078,12 +1087,12 @@
+     if (data->climate_soil3==NULL)
+     {
+         printf("Start allocate climate_soil3\n");
+-        data->climate_soil3=malloc_3d_float(N_CLIMATE,360,720);
++        data->climate_soil3=malloc_3d_float(N_CLIMATE,NLAT,NLON);
+     }
+     else
+     {
+         printf("Start reset climate_soil3\n");
+-        reset_3d_float(data->climate_soil3,N_CLIMATE,360,720);
++        reset_3d_float(data->climate_soil3,N_CLIMATE,NLAT,NLON);
+     }
+     if ((rv = nc_inq_varid(ncid, "soil_temp3", &varid))) {
+         NCERR("soil_temp3", rv);
+@@ -1095,12 +1104,12 @@
+     if (data->climate_soil4==NULL)
+     {
+         printf("Start allocate climate_soil4\n");
+-        data->climate_soil4=malloc_3d_float(N_CLIMATE,360,720);
++        data->climate_soil4=malloc_3d_float(N_CLIMATE,NLAT,NLON);
+     }
+     else
+     {
+         printf("Start reset climate_soil4\n");
+-        reset_3d_float(data->climate_soil4,N_CLIMATE,360,720);
++        reset_3d_float(data->climate_soil4,N_CLIMATE,NLAT,NLON);
+     }
+     if ((rv = nc_inq_varid(ncid, "soil_temp4", &varid))) {
+         NCERR("soil_temp4", rv);
+@@ -1112,12 +1121,12 @@
+     if (data->climate_soil5==NULL)
+     {
+         printf("Start allocate climate_soil5\n");
+-        data->climate_soil5=malloc_3d_float(N_CLIMATE,360,720);
++        data->climate_soil5=malloc_3d_float(N_CLIMATE,NLAT,NLON);
+     }
+     else
+     {
+         printf("Start reset climate_soil5\n");
+-        reset_3d_float(data->climate_soil5,N_CLIMATE,360,720);
++        reset_3d_float(data->climate_soil5,N_CLIMATE,NLAT,NLON);
+     }
+     if ((rv = nc_inq_varid(ncid, "soil_temp5", &varid))) {
+         NCERR("soil_temp5", rv);
+@@ -1126,9 +1135,9 @@
+         NCERR("soil_temp5", rv);
+     }
+ 
+-    for (size_t ilat=0;ilat<360;ilat++)
+-    {
+-        for (size_t ilon=0;ilon<720;ilon++)
++    for (size_t ilat=0;ilat<NLAT;ilat++)
++    {
++        for (size_t ilon=0;ilon<NLON;ilon++)
+         {
+             if (data->climate_soil1[0][ilat][ilon]>-274)
+             {
+@@ -1164,7 +1173,7 @@
+     int rv,ncid,varid,ncid_co2,varid_co2;
+     
+     size_t index3[3] = { 0, 0, 0 };
+-    size_t count3[3]  = {288, 360, 720 };
++    size_t count3[3]  = {288, NLAT, NLON };
+     
+     if (data->do_yearly_mech)
+     {
+@@ -1180,7 +1189,7 @@
+             }
+             printf("mechanism_year %d MERRA2_timestamp %d\n",data->mechanism_year,data->MERRA2_timestamp);
+             strcpy(premech_clim, data->PREMECH);
+-            sprintf(premech_clim, "%s%d", premech_clim, data->MERRA2_timestamp+MERRA2_START-1);
++            sprintf(premech_clim, "%s%d", premech_clim, cgb_file_year(data->MERRA2_timestamp+MERRA2_START-1));
+             strcat(premech_clim, ".nc");
+            
+ #if FORECAST
+@@ -1228,6 +1237,10 @@
+         printf("Loading CO2 premech file from %s\n",premech_co2);
+     }
+     
++    if (data->do_yearly_mech && getenv("ED_CO2_AS_IS")) {   // CarbonGlobe: one CO2 file per window year, no 2014 reuse
++        snprintf(premech_co2, 256, "%s%d.nc", data->PREMECH_CO2, cgb_file_year(data->MERRA2_timestamp+MERRA2_START-1));
++        printf("CO2 as-is: %s\n", premech_co2);
++    }
+     if ((rv = nc_open(premech_clim, NC_NOWRITE, &ncid))){
+         NCERR(premech_clim, rv);
+     }
+@@ -1256,9 +1269,9 @@
+     
+     for (size_t mon=0;mon<288;mon++)
+     {
+-        for (size_t lat_n=0;lat_n<360;lat_n++)
+-        {
+-            for (size_t lon_n=0;lon_n<720;lon_n++)
++        for (size_t lat_n=0;lat_n<NLAT;lat_n++)
++        {
++            for (size_t lon_n=0;lon_n<NLON;lon_n++)
+             {
+                 if (data->global_tmp[mon][lat_n][lon_n]>0) data->global_tmp[mon][lat_n][lon_n]-=273.2;
+                 if (data->global_soiltmp[mon][lat_n][lon_n]>0) data->global_soiltmp[mon][lat_n][lon_n]-=273.2;
+@@ -1283,7 +1296,7 @@
+     char gfed[256];
+     
+     size_t index[3] = { 0, 0, 0 };
+-    size_t count[3]  = {12, 360, 720 };
++    size_t count[3]  = {12, NLAT, NLON };
+     
+     if (data->do_yearly_mech)
+     {
+@@ -1319,10 +1332,10 @@
+     
+     /* set all missing values to 0 */
+ 
+-   // TODO: 360, 720 should be replaced by macro variables
++   // TODO: NLAT, NLON should be replaced by macro variables
+     for (k=0;k<N_CLIMATE;k++){
+-        for (i=0; i<360; i++) {
+-            for (j=0; j<720; j++) {
++        for (i=0; i<NLAT; i++) {
++            for (j=0; j<NLON; j++) {
+                 if (data->gfed_bf[k][i][j] < 0.0)
+                 {
+                     data->gfed_bf[k][i][j] = 0.0;
+@@ -1338,13 +1351,13 @@
+ 
+ void freeGlobalEnvironmentData(UserData* data)
+ {
+-    dealloc_2d_float(data->soil_depth,360,720);
+-    dealloc_2d_float(data->theta_max,360,720);
+-    dealloc_2d_float(data->k_sat,360,720);
+-    dealloc_2d_float(data->tau,360,720);
+-    dealloc_3d_float(data->climate_temp,N_CLIMATE,360,720);
+-    dealloc_3d_float(data->climate_precip,N_CLIMATE,360,720);
+-    dealloc_3d_float(data->climate_soil,N_CLIMATE,360,720);
++    dealloc_2d_float(data->soil_depth,NLAT,NLON);
++    dealloc_2d_float(data->theta_max,NLAT,NLON);
++    dealloc_2d_float(data->k_sat,NLAT,NLON);
++    dealloc_2d_float(data->tau,NLAT,NLON);
++    dealloc_3d_float(data->climate_temp,N_CLIMATE,NLAT,NLON);
++    dealloc_3d_float(data->climate_precip,N_CLIMATE,NLAT,NLON);
++    dealloc_3d_float(data->climate_soil,N_CLIMATE,NLAT,NLON);
+ }
+ 
+ ////////////////////////////////////////////////////////////////////////////////
+@@ -1862,6 +1875,12 @@
+ 
+    size_t month = 0;
+    double di = 0.0;
++   // CarbonGlobe: ED_DI_STALE emulates the shipped code, where a wet January keeps the index of the last dry January
++   // (zeroed once at the first call instead of reading uninitialised memory); default = zero all months every call.
++   static const bool di_stale = (getenv("ED_DI_STALE") != NULL);
++   static bool di_first = true;
++   if (!di_stale || di_first) { for (size_t m = 0; m < 12; m++) dryness_index[m] = 0.0; }
++   di_first = false;
+    if (pet[month] / precip[month] > 1.0) {
+       di += 30.0 * (pet[month] - precip[month]);
+       int stop = 0;
+--- a/restart.cc
++++ b/restart.cc
+@@ -26,7 +26,7 @@
+ //! @param  
+ //! @return 
+ ////////////////////////////////////////////////////////////////////////////////
+-Restart::Restart (string dbDir) : dbEnv_(0)
++Restart::Restart (string dbDir) : dbEnv_((u_int32_t) 0)
+ {
+    siteSequence_ = 1;
+    patchSequence_ = 1;
+@@ -382,6 +382,7 @@
+    char basename[STR_LEN];
+    sprintf(basename, "%s/RESTART/%s.%s", 
+            data->outdir, data->expname, cs->sdata->name_);   
++   if (getenv("ED_DUMP_YEAR_SUFFIX")) { char tmpb[STR_LEN]; snprintf(tmpb, STR_LEN, "%s_y%d", basename, (int)(time / N_SUB)); strcpy(basename, tmpb); }   // CarbonGlobe: keep every yearly dump
+ 
+    /* patch distribution file */
+    char pfilename[STR_LEN];
+@@ -579,6 +580,7 @@
+    strcat(filename,data->old_restart_exp_name); 
+    strcat(filename,".");
+    strcat(filename,cs->sdata->name_);
++   if (getenv("ED_RESTART_SUFFIX")) strcat(filename, getenv("ED_RESTART_SUFFIX"));   // CarbonGlobe: read the dump of one seed age
+    strcpy(pfilename, filename);
+    strcat(pfilename,".pss");
+ 
+--- a/site.cc
++++ b/site.cc
+@@ -156,7 +156,10 @@
+       windspeed=data->global_windspeed[mon][globY_][globX_];
+       Ts=data->global_soiltmp[mon][globY_][globX_];
+         
+-      if (data->do_yearly_mech)
++      static const bool co2_as_is = (getenv("ED_CO2_AS_IS") != NULL);   // CarbonGlobe: CO2 file holds the ppm ED should see
++      if (co2_as_is)
++         CO2=data->global_CO2[mon][globY_][globX_];
++      else if (data->do_yearly_mech)
+       {
+          if(data->mechanism_year<1850)
+             CO2=280.0/390.0*data->global_CO2[mon][globY_][globX_];

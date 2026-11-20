@@ -1,0 +1,49 @@
+{
+ "title": "Rebuild of the final submission from the stored inputs (no retraining)",
+ "archives": [
+  "artifacts_final.tar.gz"
+ ],
+ "steps": [
+  {
+   "name": "forced-fire rows from the stored ED runs",
+   "argv": [
+    "scripts/ed/ff_rows.py",
+    "work/edv3/ff_pos_srv",
+    "work/edv3/ff_pos2_srv",
+    "work/edv3/ff_pos_mac",
+    "work/edv3/ff_t1",
+    "work/edv3/ff_pos_mainpass",
+    "--out",
+    "work/ff/ff_rows_day50.npz"
+   ]
+  },
+  {
+   "name": "candidate of 13 Nov and its four level probes (scripts/build_candidate2.py, scripts/apply_*.py)",
+   "argv": [
+    "scripts/design_run.py",
+    "work/logs/day50_spec.json"
+   ]
+  }
+ ],
+ "intermediate_md5": {
+  "results/cand50_A.csv": "3c89d04a125c9acbd9b2c71cdf0843df",
+  "results/cand50_A1.csv": "c0ff9f8baeb0828404453c9dfb1de577",
+  "results/cand50_A2.csv": "f513a53ab7c4cb9744893f0d5621e676",
+  "results/cand50_A3.csv": "4f2340b02c1476aece86a16e1674509b",
+  "results/cand50_A4.csv": "4c8df09b238687fa72f1c6d4daa68509"
+ },
+ "compare": [
+  {
+   "rebuilt": "results/cand50_A.csv",
+   "stored": "final/cand50_A.csv",
+   "tolerance": 2e-06
+  }
+ ],
+ "submitted": {
+  "file": "cand50_A.csv",
+  "md5": "3c89d04a125c9acbd9b2c71cdf0843df",
+  "kaggle_submission": "58287788",
+  "submitted_utc": "2026-11-13 00:00:04 UTC",
+  "public_score": "0.022"
+ }
+}

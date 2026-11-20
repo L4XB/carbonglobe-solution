@@ -1,0 +1,117 @@
+#!/usr/bin/env python
+"""Row-level agb prediction from ORNL DAAC 2522 for all seed ages (v3): FULL-resolution pixels of the exact cell
+(work/ornl2522/cells_full.npz, 2500 per cell) and fallbacks for cells without old-growth pixels.
+
+    agb40(age) = lookup(age + 40) x exp(q(age)),   q(age) = q_old + w(age) (q_new - q_old)   (w fitted on ED, 0 from age 200)
+  q_old: median log(B2060_ssp / B2060_REF) over old-growth pixels (REF growth < gmax, B2021 > 1); at burnable sites
+         (collapse cluster or dryness factor >= 30) only if their 2021 biomass is within [0.6, 1.7] x the site's old y0 agb.
+         Missing q_old with q_new present: regression on q_new (fitted where both exist, page 2):
+         cluster q_old = -0.056 + 0.716 q_new (R2 0.97); fire-possible -0.098 + 0.635 q_new (R2 0.65);
+         fire-never warm / moist 0.0 + 0.51 q_new (R2 0.4-0.6); nothing for class b, cool, boreal.  flag src = 2
+  q_new: median log(N2060_ssp / N2060_REF) over new-forest pixels with REF > 0.3.
+  qmatch: median q of the existing-forest pixels whose REF growth matches the row's lookup growth (>= 8 pixels).
+Writes work/ornl2522/rows_<tag>.npz: pred, kind (1 old, 2 age 1, 3 intermediate), q, qmatch, npx, qsrc (1 measured q_old, 2 regression, 3 q_new only).
+"""
+from __future__ import annotations
+
+import argparse
+import sys
+from pathlib import Path
+
+import numpy as np
+
+ROOT = Path(__file__).resolve().parents[2]
+sys.path.insert(0, str(ROOT / "src")); sys.path.insert(0, str(ROOT / "scripts" / "ornl")); sys.path.insert(0, str(ROOT / "scripts" / "ed"))
+from cgb import io, shift  # noqa: E402
+import ornl_rows as orr  # noqa: E402
+import dec_eval as de  # noqa: E402
+
+W = {1: 0.85, 10: 0.79, 20: 0.76, 30: 0.72, 50: 0.57, 70: 0.45, 100: 0.38, 150: 0.19, 200: 0.0, 250: 0.0, 300: 0.0, 350: 0.0, 400: 0.0, 450: 0.0, 500: 0.0}
+
+
+def main() -> None:
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--gmax", type=float, default=0.12)
+    ap.add_argument("--min-old", type=int, default=12)
+    ap.add_argument("--min-new", type=int, default=12)
+    ap.add_argument("--tag", default="v3")
+    args = ap.parse_args()
+    z = np.load(ROOT / "work/ornl2522/cells_full.npz")
+    pos = {int(s): i for i, s in enumerate(z["sites"])}
+    L = {k: z[k] for k in ("r0", "r1", "s126", "s585", "nr", "n126", "n585")}
+    f = lambda a: np.where(a == -32768, np.nan, a.astype(np.float32) * np.float32(0.01))
+    profile, AGES = orr.profile, orr.AGES
+    _, y1 = io.open_test("ssp126"); _, y5 = io.open_test("ssp585"); FL = shift.FLOORS; M = shift.M_HEIGHT
+    Y = {"126": (y1[:, :, 1] - FL[1]) * M * orr.F_AGB, "585": (y5[:, :, 1] - FL[1]) * M * orr.F_AGB}
+    keys = shift.template_keys(); site = keys.site.to_numpy(); age = keys.age.to_numpy(); scen = keys.scenario.to_numpy()
+    cl = np.load(ROOT / "work/collapse_cluster_labels.npy") == 0; mx = np.load(ROOT / "work/fire/max_factor_rule833.npy"); strat = de.strata_of_sites()
+    n = len(keys)
+    pred = np.full(n, np.nan); kind = np.zeros(n, dtype=np.int8); qrow = np.full(n, np.nan); qmatch = np.full(n, np.nan)
+    npx = np.zeros(n, dtype=np.int32); qsrc = np.zeros(n, dtype=np.int8)
+    order = np.argsort(site, kind="stable"); bounds = np.r_[0, np.flatnonzero(np.diff(site[order])) + 1, n]
+    cnt = dict(old=0, old_reg=0, new_only=0, rej=0, none=0)
+    for b0, b1 in zip(bounds[:-1], bounds[1:]):
+        rows = order[b0:b1]; s = int(site[rows[0]])
+        if s not in pos:
+            continue
+        i0 = pos[s]
+        r0 = f(L["r0"][i0]); r1 = f(L["r1"][i0]); nr = f(L["nr"][i0])
+        okx = np.isfinite(r0) & np.isfinite(r1) & (r0 > 0.3) & (r1 > 0)
+        g = np.where(okx, np.log(np.maximum(r1, 1e-6) / np.maximum(r0, 1e-6)), np.nan)
+        old = okx & (r0 > 1.0) & (g < args.gmax) & (g > -0.2)
+        burnable = bool(cl[s]) or mx[s] >= 30
+        for sc in ("126", "585"):
+            y = Y[sc][s]; yold = float(y[7:].mean())
+            s1 = f(L["s" + sc][i0]); n1 = f(L["n" + sc][i0])
+            q_old = np.nan; q_new = np.nan; src = 0
+            m = old & np.isfinite(s1) & (s1 > 0)
+            if m.sum() >= args.min_old and yold > 1.0:
+                ratio = float(np.median(r0[m])) / yold
+                if (not burnable) or (0.6 <= ratio <= 1.7):
+                    q_old = float(np.median(np.log(s1[m] / r1[m]))); src = 1
+                else:
+                    cnt["rej"] += 1
+            mn = np.isfinite(nr) & np.isfinite(n1) & (nr > 0.3) & (n1 > 0)
+            if mn.sum() >= args.min_new:
+                q_new = float(np.median(np.log(n1[mn] / nr[mn])))
+            if not np.isfinite(q_old) and np.isfinite(q_new) and yold > 1.0:
+                if cl[s]:
+                    q_old = -0.056 + 0.716 * q_new; src = 2
+                elif mx[s] >= 1e3:
+                    q_old = -0.098 + 0.635 * q_new; src = 2
+                elif mx[s] < 30 and strat[s] in ("warm", "moist"):
+                    q_old = 0.51 * q_new; src = 2
+            if src == 1: cnt["old"] += 1
+            elif src == 2: cnt["old_reg"] += 1
+            elif np.isfinite(q_new): cnt["new_only"] += 1
+            else: cnt["none"] += 1
+            mx_ = okx & np.isfinite(s1) & (s1 > 0)
+            gx = g[mx_]; qx = np.log(s1[mx_] / r1[mx_])
+            for i in rows[scen[rows] == "ssp" + sc]:
+                a = int(age[i]); w = W[a]
+                if a == 1:
+                    if not np.isfinite(q_new):
+                        continue
+                    q = q_old + w * (q_new - q_old) if np.isfinite(q_old) else q_new
+                    rsrc = src if np.isfinite(q_old) else 3
+                elif np.isfinite(q_old) and (a >= 200 or np.isfinite(q_new)):
+                    q = q_old if a >= 200 else q_old + w * (q_new - q_old); rsrc = src
+                elif np.isfinite(q_old) and a == 150:
+                    q = q_old; rsrc = src
+                else:
+                    continue
+                pred[i] = profile(y, a + 40) * np.exp(q); qrow[i] = q; qsrc[i] = rsrc
+                kind[i] = 2 if a == 1 else (1 if a >= 150 else 3)
+                if a > 1 and gx.size:
+                    gstar = np.log(profile(y, a + 40) / profile(y, a + 1))
+                    sel = np.abs(gx - gstar) <= max(0.25 * abs(gstar), 0.04)
+                    npx[i] = int(sel.sum())
+                    if sel.sum() >= 8:
+                        qmatch[i] = float(np.median(qx[sel]))
+    np.savez(ROOT / f"work/ornl2522/rows_{args.tag}.npz", pred=pred, kind=kind, q=qrow, qmatch=qmatch, npx=npx, qsrc=qsrc)
+    print(f"site x scenario: measured q_old {cnt['old']}, q_old by regression {cnt['old_reg']}, q_new only {cnt['new_only']}, rejected (state) {cnt['rej']}, nothing {cnt['none']}; "
+          f"rows: old {int((kind == 1).sum())}, age 1 {int((kind == 2).sum())}, intermediate {int((kind == 3).sum())} of {n}; from the regression {int((qsrc == 2).sum())}; matched-pixel estimates {int(np.isfinite(qmatch).sum())}")
+
+
+if __name__ == "__main__":
+    main()

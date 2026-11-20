@@ -1,0 +1,13 @@
+/run/
+/3_model_weights/
+/data/
+/cache/
+/work/
+/results/
+.venv/
+__pycache__/
+*.pyc
+*.tar.gz
+*.tar.xz
+*.zip
+.DS_Store

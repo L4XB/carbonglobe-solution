@@ -1,0 +1,36 @@
+{
+ "title": "Rebuild of the blend S from the stack of 10 Oct and the scored probe files",
+ "archives": [
+  "artifacts_final.tar.gz",
+  "artifacts_blend.tar.gz"
+ ],
+ "steps": [
+  {
+   "name": "joint ridge correction from the scored probes (registry as of 9 Nov)",
+   "env": {
+    "CA_SCORES": "results/board_scores_asof_20261109.json"
+   },
+   "argv": [
+    "scripts/spatial_correction.py",
+    "--base",
+    "results/stack_20261010.csv",
+    "--out",
+    "results/S_rebuilt.csv",
+    "--scale",
+    "0.8",
+    "--ridge",
+    "1e-4",
+    "--ratio-file",
+    "work/cluster_ratio_pred.json"
+   ]
+  }
+ ],
+ "compare": [
+  {
+   "rebuilt": "results/S_rebuilt.csv",
+   "stored": "results/spatcorr_stack_20261110_s08.csv",
+   "in_run": true,
+   "tolerance": 2e-06
+  }
+ ]
+}

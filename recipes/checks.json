@@ -1,0 +1,24 @@
+{
+ "title": "Validation numbers of the report from stored tables",
+ "archives": [
+  "artifacts_checks.tar.gz"
+ ],
+ "steps": [
+  {
+   "name": "ED targets on 120 training cells with known outcome",
+   "show": true,
+   "argv": [
+    "scripts/report/train_cell_check.py",
+    "work/edv3/train_hv2"
+   ]
+  },
+  {
+   "name": "hold-out scores of the emulators",
+   "show": true,
+   "argv": [
+    "scripts/report/holdout_table.py"
+   ]
+  }
+ ],
+ "compare": []
+}

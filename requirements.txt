@@ -1,0 +1,12 @@
+# Python 3.12
+# final / blend / checks (python reproduce.py final|blend|checks)
+numpy==2.5.3
+pandas==3.0.6
+# emulators and training (python reproduce.py emulators, scripts/train_latent.py, scripts/direct_gbdt.py)
+torch==2.15.0
+lightgbm==4.7.0
+scipy==1.18.1
+scikit-learn==1.9.1
+# optional, only for re-deriving the stored external inputs (not needed for any reproduce.py command):
+#   scripts/ornl/*.py read the 0.01-degree GeoTIFFs of the biomass projections:   tifffile==2026.10.15 imagecodecs==2026.10.10
+#   scripts/nex/nex_monthly.py reads the NEX-GDDP-CMIP6 netCDF-4 files:           h5py==3.16.0

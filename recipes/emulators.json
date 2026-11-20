@@ -1,0 +1,48 @@
+{
+ "title": "Inference of one GRU checkpoint and one LightGBM model on the competition test files",
+ "archives": [
+  "artifacts_emulators.tar.gz"
+ ],
+ "models": [
+  "latent_noco2",
+  "direct_gbdt2"
+ ],
+ "steps": [
+  {
+   "name": "GRU latent rollout, checkpoint latent_noco2 (builds the test caches on first use)",
+   "argv": [
+    "scripts/predict_latent.py",
+    "--tags",
+    "noco2",
+    "--out",
+    "results/rebuilt_latent_noco2_m114.csv",
+    "--device",
+    "{device}"
+   ]
+  },
+  {
+   "name": "LightGBM, model direct_gbdt2",
+   "argv": [
+    "scripts/predict_gbdt.py",
+    "--tag",
+    "gbdt2",
+    "--out",
+    "results/rebuilt_direct_gbdt2_m114.csv"
+   ]
+  }
+ ],
+ "compare": [
+  {
+   "rebuilt": "results/rebuilt_latent_noco2_m114.csv",
+   "stored": "results/latent_noco2_m114.csv",
+   "in_run": true,
+   "tolerance": 2e-05
+  },
+  {
+   "rebuilt": "results/rebuilt_direct_gbdt2_m114.csv",
+   "stored": "results/direct_gbdt2_m114.csv",
+   "in_run": true,
+   "tolerance": 1e-06
+  }
+ ]
+}
